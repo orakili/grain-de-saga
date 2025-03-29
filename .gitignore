@@ -9,3 +9,7 @@ __pycache__
 
 # Jupyter Notebooks
 .ipynb_checkpoints
+
+# Model and checkpoints
+checkpoints
+output

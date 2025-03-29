@@ -16,11 +16,11 @@ project_root = os.path.abspath(os.path.join(script_directory, '..'))
 sys.path.insert(0, project_root)
 
 import mlx.core as mx
+from mlx.utils import tree_unflatten
 
 from src.model.grain_de_saga import GrainDeSaga
 from src.data.tokenizer import BPETokenizer
 from src.utils.config import ModelConfig
-
 
 def parse_arguments():
     """
@@ -61,7 +61,6 @@ def parse_arguments():
 
     return parser.parse_args()
 
-
 def load_model(model_path: str, config: ModelConfig) -> GrainDeSaga:
     """
     Load a trained model from a checkpoint.
@@ -73,17 +72,20 @@ def load_model(model_path: str, config: ModelConfig) -> GrainDeSaga:
     Returns:
         Loaded GrainDeSaga model.
     """
-    # Initialize a new model with the provided configuration
+    # Initialize a new model with the provided configuration.
     model = GrainDeSaga(config)
 
-    # Load the model weights and state from the checkpoint
+    # Load the checkpoint.
     checkpoint = mx.load(model_path)
 
-    # Update the model with the loaded parameters
-    model.update(checkpoint["model"])
+    # Extract model parameters (keys without 'optimizer_' prefix and not metadata)
+    model_parameters = {k: v for k, v in checkpoint.items()
+        if not k.startswith("optimizer_") and k not in ["global_step", "best_loss"]}
+
+    # Update the model with the loaded parameters.
+    model.update(tree_unflatten(list(model_parameters.items())))
 
     return model
-
 
 def create_story_prompt(
     theme: str,
@@ -124,7 +126,6 @@ def create_story_prompt(
     prompt += ":\n\n"
 
     return prompt
-
 
 def main():
     """
@@ -191,14 +192,16 @@ def main():
             temperature=args.temperature,
             top_k=args.top_k
         )
-
         # Decode the generated token IDs back to text
-        generated_text = tokenizer.decode(generated_ids.tolist())
+        generated_text = tokenizer.decode(generated_ids[0].tolist())
+
+        # Separate the prompt from the generated content.
+        prompt_text = prompt.strip()
+        generated_text = generated_text[len(prompt_text):].strip()
 
         # Display the generated text
         print(generated_text)
         print("-" * 40)
-
 
 if __name__ == '__main__':
     main()

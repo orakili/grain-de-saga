@@ -12,7 +12,8 @@ from typing import Dict, List, Optional, Tuple, Callable
 
 import mlx.core as mx
 import mlx.nn as nn
-import mlx.optimizers as optim
+import mlx.optimizers as optimizers
+from mlx.utils import tree_flatten
 
 from ..model.grain_de_saga import GrainDeSaga
 from ..data.dataset import StoryDataset
@@ -49,7 +50,7 @@ class Trainer:
         # Set up optimizer.
         # AdamW is a variant of Adam that includes weight decay regularization,
         # which helps prevent overfitting by penalizing large weights.
-        self.optimizer = optim.AdamW(
+        self.optimizer = optimizers.AdamW(
             learning_rate=config.learning_rate,
             weight_decay=config.weight_decay
         )
@@ -69,18 +70,16 @@ class Trainer:
 
     def compute_loss(
         self,
-        parameters: Dict,
         input_ids: mx.array,
         target_ids: mx.array
     ) -> Tuple[mx.array, mx.array]:
         """
         Compute the loss for a batch of examples.
 
-        This method performs a forward pass through the model and calculates
-        the cross-entropy loss between the model's predictions and the target tokens.
+        This function will be called by nn.value_and_grad after the model
+        has already been updated with the parameters to use.
 
         Args:
-            parameters: Model parameters.
             input_ids: Input token IDs of shape [batch_size, sequence_length].
             target_ids: Target token IDs of shape [batch_size, sequence_length].
 
@@ -89,7 +88,8 @@ class Trainer:
             [batch_size, sequence_length, vocabulary_size].
         """
         # Forward pass through the model.
-        logits = self.model.apply(parameters, input_ids)
+        # The model has already been updated with the parameters by nn.value_and_grad
+        logits = self.model(input_ids)
 
         # Reshape for cross entropy loss.
         # The cross_entropy function expects logits of shape [batch_size * sequence_length, vocabulary_size]
@@ -100,7 +100,7 @@ class Trainer:
 
         # Compute cross-entropy loss.
         # This measures how well the model predicts the next token at each position.
-        loss = self.loss_function(logits_reshaped, targets_reshaped)
+        loss = self.loss_function(logits_reshaped, targets_reshaped, reduction='mean')
 
         # Return loss and original-shaped logits.
         return loss, logits
@@ -128,7 +128,8 @@ class Trainer:
         loss_and_gradient_function = nn.value_and_grad(self.model, self.compute_loss)
 
         # Compute loss and gradients.
-        (loss, _), gradients = loss_and_gradient_function(self.model.parameters(), input_ids, target_ids)
+        # Note: We don't pass parameters explicitly here because nn.value_and_grad handles that internally
+        (loss, _), gradients = loss_and_gradient_function(input_ids, target_ids)
 
         # Update model parameters using the optimizer.
         # The optimizer applies the computed gradients to the model parameters,
@@ -155,7 +156,8 @@ class Trainer:
         # Get sequential batches for evaluation.
         for input_ids, target_ids in self.dataset.get_sequential_batches(self.config.batch_size):
             # Compute loss without updating parameters.
-            loss, _ = self.compute_loss(self.model.parameters(), input_ids, target_ids)
+            # We use the compute_loss function directly since we don't need gradients for validation
+            loss, _ = self.compute_loss(input_ids, target_ids)
             total_loss += loss.item()
             num_batches += 1
 
@@ -174,16 +176,25 @@ class Trainer:
         Args:
             path: Path to save the checkpoint.
         """
+        # Flatten the model parameters.
+        model_parameters = dict(tree_flatten(self.model.parameters()))
+
+        # Flatten optimizer state.
+        optimizer_state = dict(tree_flatten(self.optimizer.state))
+
+        # Prefix optimizer state keys to avoid conflicts.
+        optimizer_state = {f"optimizer_{k}": v for k, v in optimizer_state.items()}
+
         # Create a dictionary with all the state we need to save.
         checkpoint = {
-            "model": self.model.parameters(),
-            "optimizer": self.optimizer.state,
-            "global_step": self.global_step,
-            "best_loss": self.best_loss
+            **model_parameters,
+            **optimizer_state,
+            "global_step": mx.array(self.global_step),
+            "best_loss": mx.array(self.best_loss)
         }
 
         # Save the checkpoint to a file.
-        mx.save(path, checkpoint)
+        mx.savez(path, **checkpoint)
 
     def load_checkpoint(self, path: str) -> None:
         """
@@ -198,15 +209,22 @@ class Trainer:
         # Load the checkpoint from the file.
         checkpoint = mx.load(path)
 
+        # Extract model parameters (keys without 'optimizer_' prefix).
+        model_parameters = {k: v for k, v in checkpoint.items()
+            if not k.startswith("optimizer_") and k not in ["global_step", "best_loss"]}
+
+        # Extract optimizer state (keys with 'optimizer_' prefix).
+        optimizer_state = {k[4:]: v for k, v in checkpoint.items() if k.startswith("optimizer_")}
+
         # Restore model parameters.
-        self.model.update(checkpoint["model"])
+        self.model.update(tree_unflatten(list(model_parameters.items())))
 
         # Restore optimizer state.
-        self.optimizer.state = checkpoint["optimizer"]
+        self.optimizer.state = tree_unflatten(list(optimizer_state.items()))
 
         # Restore training progress.
-        self.global_step = checkpoint["global_step"]
-        self.best_loss = checkpoint["best_loss"]
+        self.global_step = checkpoint["global_step"].item()
+        self.best_loss = checkpoint["best_loss"].item()
 
     def train(self, callback: Optional[Callable[[Dict[str, float]], None]] = None) -> None:
         """

@@ -18,6 +18,7 @@ project_root = os.path.abspath(os.path.join(script_directory, '..'))
 sys.path.insert(0, project_root)
 
 import mlx.core as mx
+from mlx.utils import tree_flatten
 
 from src.model.grain_de_saga import GrainDeSaga
 from src.data.dataset import StoryDataset
@@ -36,8 +37,13 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description="Train the Grain de Saga model")
 
     # Data arguments
-    parser.add_argument("--data_directory", type=str, required=True,
-                        help="Directory containing training data files")
+    data_group = parser.add_mutually_exclusive_group(required=True)
+    data_group.add_argument("--data_directory", type=str,
+                            help="Directory containing training data files")
+    data_group.add_argument("--huggingface_dataset", type=str,
+                            help="Name of the Hugging Face dataset to use")
+    parser.add_argument("--max_samples", type=int, default=None,
+                        help="Maximum number of samples to use from the dataset")
     parser.add_argument("--output_directory", type=str, default="output",
                         help="Directory to save model and tokenizer")
 
@@ -70,31 +76,6 @@ def parse_arguments():
     return parser.parse_args()
 
 
-def load_training_data(data_directory: str) -> List[str]:
-    """
-    Load training data from text files in a directory.
-
-    Args:
-        data_directory: Directory containing text files.
-
-    Returns:
-        List of text samples loaded from the files.
-    """
-    text_samples = []
-
-    # Iterate through all files in the directory
-    for filename in os.listdir(data_directory):
-        # Only process text files
-        if filename.endswith('.txt'):
-            file_path = os.path.join(data_directory, filename)
-
-            # Read the file content
-            with open(file_path, 'r', encoding='utf-8') as file:
-                text_samples.append(file.read())
-
-    return text_samples
-
-
 def main():
     """
     Main training function.
@@ -115,29 +96,9 @@ def main():
     os.makedirs(args.output_directory, exist_ok=True)
     os.makedirs(args.checkpoint_directory, exist_ok=True)
 
-    # Load training data
-    print(f"Loading data from {args.data_directory}")
-    text_samples = load_training_data(args.data_directory)
-
-    # Check if we have any data
-    if not text_samples:
-        print("No training data found. Exiting.")
-        return
-
-    print(f"Loaded {len(text_samples)} text samples")
-
     # Initialize tokenizer
     print("Initializing tokenizer")
     tokenizer = BPETokenizer(vocabulary_size=args.vocabulary_size)
-
-    # Train tokenizer on data
-    print("Training tokenizer")
-    tokenizer.train(text_samples, verbose=True)
-
-    # Save tokenizer
-    tokenizer_path = os.path.join(args.output_directory, "tokenizer.json")
-    tokenizer.save(tokenizer_path)
-    print(f"Saved tokenizer to {tokenizer_path}")
 
     # Initialize dataset
     print("Preparing dataset")
@@ -145,8 +106,30 @@ def main():
         tokenizer=tokenizer,
         max_sequence_length=args.context_length
     )
-    dataset.load_texts(text_samples)
+
+    # Load data using the appropriate method
+    if args.data_directory:
+        print(f"Loading data from {args.data_directory}")
+        dataset.load_from_directory(args.data_directory, max_samples=args.max_samples)
+    else:
+        print(f"Loading data from Hugging Face dataset: {args.huggingface_dataset}")
+        dataset.load_from_huggingface(args.huggingface_dataset, max_samples=args.max_samples)
+
+    # Check if we have any data
+    if len(dataset) == 0:
+        print("No training data found. Exiting.")
+        return
+
     print(f"Created dataset with {len(dataset)} examples")
+
+    # Train tokenizer on the original texts
+    print("Training tokenizer")
+    tokenizer.train(dataset.get_raw_texts(), verbose=True)
+
+    # Save tokenizer
+    tokenizer_path = os.path.join(args.output_directory, "tokenizer.json")
+    tokenizer.save(tokenizer_path)
+    print(f"Saved tokenizer to {tokenizer_path}")
 
     # Initialize model configuration
     model_config = ModelConfig(
@@ -171,8 +154,8 @@ def main():
     print("Initializing model")
     model = GrainDeSaga(model_config)
 
-    # Print model summary
-    total_parameters = sum(parameter.size for parameter in model.parameters().values())
+    # Print model summary using tree_flatten
+    total_parameters = sum(v.size for _, v in tree_flatten(model.parameters()))
     print(f"Model initialized with {total_parameters:,} parameters")
 
     # Initialize trainer

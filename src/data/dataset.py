@@ -41,6 +41,7 @@ class StoryDataset:
         self.max_sequence_length = max_sequence_length
         self.stride = stride
         self.examples: List[List[int]] = []
+        self.raw_texts: List[str] = []  # Store original texts for tokenizer training
 
     def load_texts(self, texts: List[str]):
         """
@@ -52,6 +53,9 @@ class StoryDataset:
         Args:
             texts: List of text samples to load.
         """
+        # Store the original texts
+        self.raw_texts.extend(texts)
+
         for text in texts:
             # Encode the text using the BPE tokenizer.
             tokens = self.tokenizer.encode(text)
@@ -68,7 +72,7 @@ class StoryDataset:
                 if len(last_chunk) == self.max_sequence_length:
                     self.examples.append(last_chunk)
 
-    def load_from_directory(self, directory: str, file_extension: str = ".txt"):
+    def load_from_directory(self, directory: str, file_extension: str = ".txt", max_samples: Optional[int] = None):
         """
         Load texts from a directory.
 
@@ -78,6 +82,7 @@ class StoryDataset:
         Args:
             directory: Directory containing text files.
             file_extension: File extension to look for (default is ".txt").
+            max_samples: Maximum number of samples to load (default is None, which loads all).
         """
         texts = []
         for filename in os.listdir(directory):
@@ -85,7 +90,69 @@ class StoryDataset:
                 with open(os.path.join(directory, filename), 'r', encoding='utf-8') as file:
                     texts.append(file.read())
 
+                # Break if we've reached the maximum number of samples
+                if max_samples is not None and len(texts) >= max_samples:
+                    break
+
+        print(f"Loaded {len(texts)} text files from {directory}")
         self.load_texts(texts)
+
+    def load_from_huggingface(self, dataset_name: str = "fhswf/TinyStoriesV2_cleaned", max_samples: Optional[int] = None) -> None:
+        """
+        Load texts from a Hugging Face dataset and prepare them for tokenization.
+
+        This method fetches the specified dataset from Hugging Face, extracts the stories,
+        replaces the dataset-specific end-of-text token with our tokenizer's EOS token,
+        and loads the processed texts into our dataset.
+
+        Args:
+            dataset_name: The name of the Hugging Face dataset to load. Defaults to "fhswf/TinyStoriesV2_cleaned".
+            max_samples: Maximum number of samples to load (default is None, which loads all).
+        """
+        from datasets import load_dataset
+
+        # Load the specified dataset from Hugging Face.
+        huggingface_dataset = load_dataset(dataset_name)
+
+        # Extract and process stories from all splits of the dataset.
+        processed_stories = []
+        for dataset_split in huggingface_dataset.values():
+            if "text" in dataset_split.features:
+                # If max_samples is specified, limit the number of samples
+                if max_samples is not None:
+                    remaining_samples = max_samples - len(processed_stories)
+                    if remaining_samples <= 0:
+                        break
+
+                    # Use select() to limit samples if needed
+                    data_to_process = dataset_split.select(range(min(remaining_samples, len(dataset_split))))
+                else:
+                    data_to_process = dataset_split
+
+                for story_item in data_to_process:
+                    # Replace the dataset's end-of-text token with our tokenizer's EOS token.
+                    processed_story = story_item["text"].replace("<|endoftext|>", self.tokenizer.eos_token)
+                    processed_stories.append(processed_story)
+
+                    # Break if we've reached the maximum number of samples
+                    if max_samples is not None and len(processed_stories) >= max_samples:
+                        break
+
+        # Load the processed stories into our dataset for further processing and tokenization.
+        self.load_texts(processed_stories)
+
+        print(f"Loaded and processed {len(processed_stories)} stories from the {dataset_name} dataset.")
+
+    def get_raw_texts(self) -> List[str]:
+        """
+        Get the original raw texts loaded into the dataset.
+
+        This is useful for training the tokenizer.
+
+        Returns:
+            List of original text samples.
+        """
+        return self.raw_texts
 
     def __len__(self) -> int:
         """

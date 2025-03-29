@@ -42,7 +42,7 @@ class TokenEmbedding(nn.Module):
         # flow during training.
         self.embedding.weight = mx.random.normal(
             shape=(vocabulary_size, embedding_dimension)
-        ) / math.sqrt(embedding_dimension)
+        ) / mx.sqrt(mx.array(embedding_dimension))
 
     def __call__(self, token_ids: mx.array) -> mx.array:
         """
@@ -95,7 +95,7 @@ class PositionalEncoding(nn.Module):
         # Together, they create a unique pattern for each position.
         division_terms = mx.exp(
             mx.arange(0, embedding_dimension, 2) *
-            (-math.log(10000.0) / embedding_dimension)
+            (-mx.log(mx.array(10000.0)) / embedding_dimension)
         )
 
         # Apply sine to even indices (0, 2, 4...) in the embedding dimension.

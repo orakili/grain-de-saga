@@ -407,8 +407,8 @@ class BPETokenizer:
         tokenizer.eos_token = data['eos_token']
 
         # Load vocabulary.
-        tokenizer.token_to_id = {k: int(v) for k, v in data['token_to_id'].items()}
-        tokenizer.id_to_token = {int(k): v for k, v in data['token_to_id'].items()}
+        tokenizer.token_to_id = data['token_to_id']
+        tokenizer.id_to_token = {int(v): k for k, v in data['token_to_id'].items()}
 
         # Load merges.
         tokenizer.merges = {}
